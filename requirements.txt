@@ -8,3 +8,4 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 # CRÍTICO: websocket-client>=1.0 rompe la API de IQ Option — mantener en 0.57
 websocket-client==0.57.0
+websockets>=11.0

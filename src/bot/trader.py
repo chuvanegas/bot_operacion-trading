@@ -1,15 +1,9 @@
 """
-Loop principal de trading con aprobación manual obligatoria.
-
-Flujo por ciclo (cada 60s):
-  1. Obtener velas + precio + balance
-  2. Analizar con MasterStrategy (6 capas)
-  3. RiskGate: 5 puertas
-  4. Si todas pasan → pedir aprobación al usuario vía Telegram
-  5. Si aprueba → ejecutar operación
-  6. Esperar resultado → notificar resultado
+Loop principal — conecta a IQ Option, monitorea y pide aprobación
+al usuario via app web (localhost) o Telegram como respaldo.
 """
 import time
+import asyncio
 import logging
 from datetime import datetime, date
 
@@ -19,12 +13,12 @@ from src.strategies.master_strategy import MasterStrategy
 from src.risk.money_management       import MoneyManager
 from src.risk.risk_gate              import RiskGate
 from src.bot.alerts                  import alert_signal, alert_result, alert_daily_limit, reset_daily
-from src.bot.approval                import request_approval
-from src.bot.display                 import Display
+from src.bot.approval                import request_approval as telegram_approval
+from src.bot import ws_server
 
 logger = logging.getLogger(__name__)
 
-CANDLE_INTERVAL = 60       # 1 minuto
+CANDLE_INTERVAL = 60
 CANDLE_COUNT    = 300
 RETRAIN_EVERY   = 50
 
@@ -35,26 +29,43 @@ class Trader:
         self.strategy = MasterStrategy()
         self.mm       = MoneyManager()
         self.gate     = RiskGate()
-        self.display  = Display()
         self._trade_count = 0
         self._history: list = []
 
     # ── Inicio ────────────────────────────────────────────────────────────────
     def start(self):
+        # Iniciar app web
+        ws_server.start_server()
+        ws_server.update_state(bot_status="CONECTANDO A IQ OPTION…")
+
         if not self.client.connect():
+            ws_server.update_state(bot_status="ERROR: No se pudo conectar a IQ Option",
+                                   connected=False)
             logger.error("No se pudo conectar a IQ Option")
             return
 
         balance = self.client.get_balance()
         self.mm.reset_day(balance)
-        self.display.set_balance(balance, balance)
-        logger.info(f"Balance inicial: ${balance:.2f} | Cuenta: {'DEMO' if True else 'REAL'}")
-        logger.info("Bot iniciado — modo APROBACIÓN MANUAL")
-        logger.info("Cada señal requiere tu ✅ en Telegram antes de operar")
 
-        # Entrenar ML con datos históricos iniciales
-        df_init = self.client.get_candles(ASSET, CANDLE_INTERVAL, CANDLE_COUNT)
-        self.strategy.train_ml(df_init)
+        from config.settings import USE_DEMO
+        ws_server.update_state(
+            connected    = True,
+            account_type = "PRACTICE" if USE_DEMO else "REAL",
+            balance      = balance,
+            balance_start= balance,
+            bot_status   = "MONITOREANDO",
+            asset        = ASSET,
+        )
+
+        logger.info(f"✅ Conectado | Balance: ${balance:.2f} | {'DEMO' if USE_DEMO else 'REAL'}")
+        logger.info(f"🌐 Abre tu app: http://localhost:8765/app.html  (o abre web/app.html)")
+
+        # Entrenar ML inicial
+        try:
+            df_init = self.client.get_candles(ASSET, CANDLE_INTERVAL, CANDLE_COUNT)
+            self.strategy.train_ml(df_init)
+        except Exception as e:
+            logger.warning(f"ML inicial no entrenado: {e}")
 
         self._loop()
 
@@ -64,26 +75,23 @@ class Trader:
 
         while True:
             try:
-                # ── Reset diario ─────────────────────────────────────────────
                 today = date.today()
                 if today != last_day:
                     balance = self.client.get_balance()
                     self.mm.reset_day(balance)
                     reset_daily()
                     last_day = today
-                    logger.info("Reset diario ejecutado")
 
                 # ── Datos frescos ─────────────────────────────────────────────
                 df      = self.client.get_candles(ASSET, CANDLE_INTERVAL, CANDLE_COUNT)
                 balance = self.client.get_balance()
                 price   = float(df["close"].iloc[-1])
 
-                # ── Análisis completo (6 capas) ───────────────────────────────
+                # ── Análisis ──────────────────────────────────────────────────
                 analysis = self.strategy.analyze(df)
                 amount   = self.mm.get_amount()
                 is_open  = self.client.is_asset_open(ASSET, OPTION_TYPE)
 
-                # ── Risk Gate (5 puertas) ─────────────────────────────────────
                 gate_result = self.gate.check(
                     analysis   = analysis,
                     balance    = balance,
@@ -92,64 +100,109 @@ class Trader:
                     asset_open = is_open,
                 )
 
-                # ── Dashboard de terminal ─────────────────────────────────────
-                self.display.update(analysis, gate_result, balance,
-                                    self.mm.daily_stats, self._history[-10:])
+                pcrv4  = analysis.get("pcrv4", {})
+                trend  = analysis.get("trend", {})
+                layers = {
+                    "tech":  analysis.get("tech",  {}),
+                    "pa":    analysis.get("pa",    {}),
+                    "ml":    analysis.get("ml",    {}),
+                    "pcrv4": pcrv4,
+                }
+
+                # ── Actualizar app web ────────────────────────────────────────
+                ws_server.update_state(
+                    balance    = balance,
+                    price      = price,
+                    signal     = analysis.get("signal"),
+                    confidence = analysis.get("confidence", 0),
+                    score      = analysis.get("score", 0),
+                    pcrv4      = pcrv4,
+                    gates      = gate_result.get("gates", []),
+                    verdict    = gate_result.get("verdict", "BLOCK"),
+                    block_reason = gate_result.get("block_reason"),
+                    trend      = trend,
+                    layers     = layers,
+                    reasons    = analysis.get("reasons", []),
+                    daily      = self.mm.daily_stats,
+                    history    = self._history[-20:],
+                    pending_approval = False,
+                    bot_status = "MONITOREANDO",
+                )
 
                 # ── Límites diarios ───────────────────────────────────────────
                 limits = self.mm.check_daily_limits(balance)
                 if limits["stop_loss"]:
                     alert_daily_limit("stop_loss", balance, self.mm._day_start)
-                    logger.warning("🛑 Stop loss diario alcanzado — bot detenido")
+                    ws_server.update_state(bot_status="DETENIDO: Stop loss diario")
                     break
                 if limits["take_profit"]:
                     alert_daily_limit("take_profit", balance, self.mm._day_start)
-                    logger.info("🎉 Take profit diario alcanzado — bot detenido")
+                    ws_server.update_state(bot_status="DETENIDO: Take profit diario ✅")
                     break
 
-                # ── ¿Puede operar? ────────────────────────────────────────────
+                # ── Señal válida → pedir aprobación ───────────────────────────
                 if gate_result["can_trade"]:
                     signal  = gate_result["signal"]
-                    pcrv4   = analysis.get("pcrv4", {})
-                    reasons = analysis.get("reasons", [])
                     conf    = analysis.get("confidence", 0)
                     score   = analysis.get("score", 0)
+                    reasons = analysis.get("reasons", [])
 
-                    # ── PEDIR APROBACIÓN AL USUARIO ───────────────────────────
-                    logger.info(f"🔔 Señal válida: {signal.upper()} "
-                                f"conf={conf:.1%} score={score:.2f} — esperando aprobación…")
+                    logger.info(f"🔔 Señal: {signal.upper()} conf={conf:.1%} score={score:.2f}")
 
-                    approved = request_approval(
-                        signal       = signal,
-                        asset        = ASSET,
-                        price        = price,
-                        confidence   = conf,
-                        score        = score,
-                        pcrv4_active = pcrv4.get("pattern", False),
-                        reasons      = reasons,
+                    # Marcar como pendiente en la app web
+                    ws_server.update_state(
+                        pending_approval = True,
+                        bot_status       = f"⏳ ESPERANDO TU APROBACIÓN — {signal.upper()}",
                     )
+
+                    # Intentar aprobación por web primero, Telegram como respaldo
+                    approved = self._request_approval_hybrid(
+                        signal, ASSET, price, conf, score,
+                        pcrv4.get("pattern", False), reasons
+                    )
+
+                    ws_server.update_state(pending_approval=False)
 
                     if approved:
                         self._place_trade(signal, amount, analysis, price)
                     else:
-                        logger.info("Señal descartada — sin aprobación del usuario")
+                        ws_server.update_state(bot_status="MONITOREANDO — señal descartada")
+                        logger.info("Señal descartada — sin aprobación")
 
-                else:
-                    logger.debug(f"Gate BLOCK: {gate_result.get('block_reason','')}")
-
-                # ── Re-entrenar ML cada N operaciones ─────────────────────────
                 if self._trade_count > 0 and self._trade_count % RETRAIN_EVERY == 0:
-                    logger.info("Re-entrenando modelo ML…")
+                    logger.info("Re-entrenando ML…")
                     self.strategy.train_ml(df)
 
                 time.sleep(CANDLE_INTERVAL)
 
             except KeyboardInterrupt:
-                logger.info("Bot detenido por usuario (Ctrl+C)")
+                ws_server.update_state(bot_status="DETENIDO por usuario")
                 break
             except Exception as e:
                 logger.error(f"Error en loop: {e}", exc_info=True)
+                ws_server.update_state(bot_status=f"Error: {e}")
                 time.sleep(10)
+
+    # ── Aprobación híbrida (web + Telegram fallback) ──────────────────────────
+    def _request_approval_hybrid(self, signal, asset, price, conf, score,
+                                  pcrv4_active, reasons) -> bool:
+        TIMEOUT = 50
+
+        if ws_server.has_web_client():
+            # Hay alguien en la app web → esperar ahí
+            logger.info("Esperando aprobación en app web…")
+            try:
+                loop = asyncio.new_event_loop()
+                result = loop.run_until_complete(ws_server.wait_for_approval(TIMEOUT))
+                loop.close()
+                return result
+            except Exception as e:
+                logger.warning(f"Error esperando web approval: {e}")
+                return False
+        else:
+            # Nadie en la web → usar Telegram
+            logger.info("Sin cliente web — usando Telegram para aprobación…")
+            return telegram_approval(signal, asset, price, conf, score, pcrv4_active, reasons)
 
     # ── Colocar operación ─────────────────────────────────────────────────────
     def _place_trade(self, signal: str, amount: float, analysis: dict, price: float):
@@ -157,18 +210,18 @@ class Trader:
         reasons = analysis.get("reasons", [])
         conf    = analysis.get("confidence", 0)
 
-        # Alerta informativa (sin pedir aprobación de nuevo — ya fue aprobado)
+        ws_server.update_state(bot_status=f"EJECUTANDO {signal.upper()} ${amount:.2f}…")
         alert_signal(signal, ASSET, conf, reasons,
                      pcrv4_active=pcrv4.get("pattern", False), price=price)
 
         ok, order_id = self.client.buy(ASSET, amount, signal, EXPIRY_SECONDS, OPTION_TYPE)
         if not ok:
-            logger.error(f"Error colocando orden {signal.upper()}")
+            ws_server.update_state(bot_status="ERROR colocando orden")
             return
 
-        logger.info(f"💰 OPERACIÓN: {signal.upper()} {ASSET} ${amount:.2f} | id={order_id}")
+        logger.info(f"💰 {signal.upper()} ${amount:.2f} ejecutado | id={order_id}")
+        ws_server.update_state(bot_status=f"OPERACIÓN ACTIVA — esperando resultado ({EXPIRY_SECONDS}s)…")
 
-        # Esperar vencimiento
         time.sleep(EXPIRY_SECONDS + 2)
 
         outcome, profit = self.client.check_win(order_id, OPTION_TYPE)
@@ -178,14 +231,24 @@ class Trader:
         self.gate.daily_trades += 1
         self._trade_count += 1
 
-        self._history.append({
+        entry = {
             "time":    datetime.now().strftime("%H:%M"),
             "signal":  signal,
             "outcome": outcome,
             "profit":  profit,
             "balance": balance_now,
-        })
+            "conf":    conf,
+            "pcrv4":   pcrv4.get("pattern", False),
+        }
+        self._history.append(entry)
+
+        ws_server.update_state(
+            balance  = balance_now,
+            daily    = self.mm.daily_stats,
+            history  = self._history[-20:],
+            bot_status = f"{'✅ WIN' if outcome=='win' else '❌ LOSE'} {signal.upper()} P&L:{profit:+.2f}",
+        )
 
         alert_result(signal, ASSET, outcome, profit, balance_now)
         icon = "✅" if outcome == "win" else "❌"
-        logger.info(f"{icon} RESULTADO: {outcome.upper()} profit={profit:+.2f} balance=${balance_now:.2f}")
+        logger.info(f"{icon} {outcome.upper()} profit={profit:+.2f} balance=${balance_now:.2f}")

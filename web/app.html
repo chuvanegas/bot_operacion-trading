@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PCRV4 Bot — IQ Option</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap">
+  <style>
+    :root {
+      --bg: #07070e; --s1: #0f0f18; --s2: #161620;
+      --border: #1f1f2e; --fg: #eeeef8; --muted: #55556e;
+      --accent: #7c6af7; --g: #22c55e; --r: #ef4444;
+      --y: #f59e0b; --pcrv4: #c084fc;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: 'Inter', sans-serif; font-size: 13px; line-height: 1.5;
+      padding: 0 16px env(safe-area-inset-bottom, 16px);
+      overflow-x: hidden;
+    }
+
+    /* ── TOP BAR ── */
+    .topbar {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(7,7,14,.92); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 0; flex-wrap: wrap;
+    }
+    .topbar-title { font-size: 15px; font-weight: 900; color: var(--accent); letter-spacing: .04em; }
+    .conn-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .conn-dot.on  { background: var(--g); box-shadow: 0 0 8px var(--g); animation: p 1.5s ease-in-out infinite; }
+    .conn-dot.off { background: var(--r); }
+    .conn-dot.wait{ background: var(--y); animation: p 1s ease-in-out infinite; }
+    @keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
+    .topbar-status { font-size: 11px; color: var(--muted); flex: 1; }
+    .topbar-price  { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; }
+    .topbar-balance{ font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+    .badge {
+      padding: 3px 9px; border-radius: 20px; font-size: 10px;
+      font-weight: 700; border: 1px solid currentColor; letter-spacing: .04em;
+    }
+    .badge-demo { color: var(--y); }
+    .badge-real { color: var(--r); }
+
+    /* ── CONN OVERLAY ── */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(7,7,14,.95);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; z-index: 999; transition: opacity .4s;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+    .overlay-icon { font-size: 48px; }
+    .overlay-msg  { font-size: 15px; font-weight: 700; text-align: center; color: var(--fg); }
+    .overlay-sub  { font-size: 12px; color: var(--muted); text-align: center; max-width: 320px; }
+    .retry-btn {
+      padding: 10px 24px; border-radius: 8px; background: rgba(124,106,247,.18);
+      border: 1px solid var(--accent); color: var(--accent); font-family: inherit;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── APPROVAL BANNER ── */
+    .approval {
+      display: none; position: fixed;
+      top: 60px; left: 16px; right: 16px; z-index: 200;
+      background: rgba(10,10,20,.97); border: 2px solid var(--accent);
+      border-radius: 16px; padding: 20px; gap: 16px;
+      flex-direction: column; align-items: center;
+      box-shadow: 0 0 40px rgba(124,106,247,.4);
+      animation: glw 1.4s ease-in-out infinite alternate;
+    }
+    .approval.show { display: flex; }
+    @keyframes glw { from{box-shadow:0 0 20px rgba(124,106,247,.3)} to{box-shadow:0 0 50px rgba(124,106,247,.6)} }
+    .approval-head { font-size: 14px; font-weight: 900; color: var(--accent); letter-spacing: .05em; text-transform: uppercase; text-align: center; }
+    .approval-info {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; max-width: 400px;
+      font-size: 12px; font-family: 'JetBrains Mono', monospace;
+    }
+    .info-row { display: flex; justify-content: space-between; padding: 5px 10px; background: var(--s1); border-radius: 6px; }
+    .info-label { color: var(--muted); }
+    .info-val { font-weight: 700; }
+    .approval-timer { font-size: 42px; font-weight: 900; color: var(--y); font-family: 'JetBrains Mono', monospace; }
+    .approval-timer.urgent { color: var(--r); animation: p .5s ease-in-out infinite; }
+    .approval-btns { display: flex; gap: 12px; width: 100%; max-width: 340px; }
+    .btn-approve, .btn-cancel-op {
+      flex: 1; padding: 16px; border-radius: 12px; font-family: inherit;
+      font-size: 15px; font-weight: 900; cursor: pointer; letter-spacing: .06em;
+      text-transform: uppercase; border: 2px solid; transition: all .15s;
+    }
+    .btn-approve  { background: rgba(34,197,94,.15); border-color: var(--g); color: var(--g); }
+    .btn-approve:hover  { background: rgba(34,197,94,.3); transform: scale(1.02); }
+    .btn-cancel-op{ background: rgba(239,68,68,.1);  border-color: var(--r); color: var(--r); }
+    .btn-cancel-op:hover{ background: rgba(239,68,68,.22); }
+    .approval-reason { font-size: 11px; color: var(--muted); text-align: center; }
+
+    /* ── MAIN GRID ── */
+    .main { padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+
+    /* ── SIGNAL CARD ── */
+    .signal-card {
+      display: grid; grid-template-columns: auto 1fr; gap: 0;
+      background: var(--s1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    }
+    .signal-side {
+      width: 90px; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 20px 10px;
+      transition: background .3s;
+    }
+    .signal-side.call { background: rgba(34,197,94,.12); }
+    .signal-side.put  { background: rgba(239,68,68,.1); }
+    .signal-side.none { background: var(--s2); }
+    .signal-dir { font-size: 28px; font-weight: 900; letter-spacing: .08em; }
+    .signal-conf { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .signal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .signal-score { font-size: 13px; font-weight: 700; }
+    .signal-reasons { font-size: 11px; color: var(--muted); }
+    .layer-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700;
+      border: 1px solid currentColor;
+    }
+    .chip-call { color: var(--g); }
+    .chip-put  { color: var(--r); }
+    .chip-none { color: var(--muted); }
+    .chip-pcrv4{ color: var(--pcrv4); }
+
+    /* ── PCRV4 ── */
+    .pcrv4-card {
+      background: var(--s1); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+    }
+    .card-title {
+      font-size: 10px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .1em; margin-bottom: 10px;
+    }
+    .candles { display: flex; align-items: flex-end; gap: 8px; height: 60px; padding: 0 2px; }
+    .cdl { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; min-width: 0; justify-content: flex-end; }
+    .cdl .lbl { font-size: 10px; color: var(--muted); font-weight: 700; }
+    .cdl .body { width: 100%; max-width: 32px; border-radius: 3px; }
+    .c-bull  { background: var(--g);  height: 20px; }
+    .c-bear  { background: var(--r);  height: 20px; }
+    .c-doji  { background: var(--y);  height: 10px; }
+    .c-break { background: var(--pcrv4); height: 42px; }
+    .c-conf  { background: rgba(192,132,252,.55); height: 24px; }
+    .c-grey  { background: var(--border); height: 14px; }
+
+    /* ── GATES ── */
+    .gates-card {
+      background: var(--s1); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+    }
+    .verdict {
+      display: flex; align-items: center; justify-content: center;
+      gap: 8px; padding: 10px; border-radius: 8px; font-weight: 800; font-size: 13px;
+      letter-spacing: .07em; text-transform: uppercase; margin-bottom: 10px;
+    }
+    .v-pass  { background: rgba(34,197,94,.1);  color: var(--g); border: 1px solid rgba(34,197,94,.25); }
+    .v-block { background: rgba(239,68,68,.08); color: var(--r); border: 1px solid rgba(239,68,68,.2); }
+    .v-wait  { background: rgba(124,106,247,.1);color: var(--accent); border: 1px solid rgba(124,106,247,.25); }
+    .gate { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+    .gate:last-child { border-bottom: none; }
+    .gate-ico { font-size: 13px; width: 20px; }
+    .gate-name { font-weight: 700; font-size: 11px; min-width: 115px; text-transform: uppercase; letter-spacing: .04em; }
+    .gate-name.gp { color: var(--g); }
+    .gate-name.gb { color: var(--r); }
+    .gate-reason { font-size: 11px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── KPI ROW ── */
+    .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media(max-width:500px){ .kpi-row { grid-template-columns: 1fr 1fr; } }
+    .kpi { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+    .kpi-lbl { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .kpi-val { font-size: 22px; font-weight: 900; line-height: 1.1; margin-top: 3px; }
+    .kpi-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .g { color: var(--g); } .r { color: var(--r); } .y { color: var(--y); } .a { color: var(--accent); } .pu { color: var(--pcrv4); }
+
+    /* ── HISTORY ── */
+    .hist-card {
+      background: var(--s1); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+    }
+    .hist-row {
+      display: flex; align-items: center; gap: 10px; padding: 7px 0;
+      border-bottom: 1px solid var(--border); font-size: 12px;
+    }
+    .hist-row:last-child { border-bottom: none; }
+    .hist-time { color: var(--muted); min-width: 44px; font-family: 'JetBrains Mono', monospace; }
+    .hist-sig { font-weight: 700; min-width: 36px; }
+    .hist-pnl { font-weight: 700; margin-left: auto; min-width: 56px; text-align: right; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── TREND / SR ── */
+    .info-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media(max-width:420px){ .info-cards { grid-template-columns: 1fr; } }
+    .info-card { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+    .sr-row { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+    .sr-pill { padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+    .sr-r { background: rgba(239,68,68,.12); color: var(--r); }
+    .sr-s { background: rgba(34,197,94,.1);  color: var(--g); }
+
+    footer { padding: 20px 0 8px; color: var(--muted); font-size: 10px; text-align: center; }
+  </style>
+</head>
+<body>
+
+<!-- ══ CONEXIÓN OVERLAY ════════════════════════════════════════════════════ -->
+<div class="overlay" id="overlay">
+  <div class="spinner" id="overlaySpinner"></div>
+  <div class="overlay-icon" id="overlayIcon" style="display:none">🔌</div>
+  <div class="overlay-msg" id="overlayMsg">Conectando con el bot…</div>
+  <div class="overlay-sub" id="overlaySub">
+    Asegúrate de que el bot esté corriendo:<br>
+    <code style="color:var(--accent)">python main.py</code>
+  </div>
+  <button class="retry-btn" id="retryBtn" style="display:none" onclick="reconnect()">Intentar de nuevo</button>
+</div>
+
+<!-- ══ APPROVAL BANNER ════════════════════════════════════════════════════ -->
+<div class="approval" id="approvalBanner">
+  <div class="approval-head" id="apHead">🔔 SEÑAL — ¿OPERAS?</div>
+  <div class="approval-info" id="apInfo"></div>
+  <div class="approval-timer" id="apTimer">50</div>
+  <div class="approval-btns">
+    <button class="btn-approve" onclick="sendDecision('approve')">✅ INVERTIR</button>
+    <button class="btn-cancel-op" onclick="sendDecision('cancel')">❌ NO</button>
+  </div>
+  <div class="approval-reason" id="apReason"></div>
+</div>
+
+<!-- ══ TOPBAR ══════════════════════════════════════════════════════════ -->
+<div class="topbar">
+  <div class="conn-dot wait" id="connDot"></div>
+  <span class="topbar-title">PCRV4</span>
+  <span class="badge badge-demo" id="accountBadge">DEMO</span>
+  <span class="topbar-price g" id="topPrice">—</span>
+  <span class="topbar-balance" id="topBalance">—</span>
+  <span class="topbar-status" id="topStatus">conectando…</span>
+</div>
+
+<!-- ══ MAIN ════════════════════════════════════════════════════════════ -->
+<div class="main">
+
+  <!-- KPIs -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="kpi-lbl">Balance</div>
+      <div class="kpi-val g" id="kBal">—</div>
+      <div class="kpi-sub" id="kBalSub">cuenta demo</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lbl">P&L Hoy</div>
+      <div class="kpi-val" id="kPnl">—</div>
+      <div class="kpi-sub" id="kPnlSub">desde inicio</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lbl">Win Rate</div>
+      <div class="kpi-val" id="kWr">—</div>
+      <div class="kpi-sub" id="kWrSub">operaciones</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lbl">Score</div>
+      <div class="kpi-val a" id="kScore">—</div>
+      <div class="kpi-sub" id="kConf">confianza —</div>
+    </div>
+  </div>
+
+  <!-- Señal principal -->
+  <div class="signal-card">
+    <div class="signal-side none" id="sigSide">
+      <div class="signal-dir" id="sigDir">—</div>
+      <div class="signal-conf" id="sigConf">esperando…</div>
+    </div>
+    <div class="signal-body">
+      <div class="signal-score" id="sigScore">Score: —</div>
+      <div class="layer-chips" id="layerChips"></div>
+      <div class="signal-reasons" id="sigReasons">Analizando mercado…</div>
+    </div>
+  </div>
+
+  <!-- PCRV4 -->
+  <div class="pcrv4-card">
+    <div class="card-title">🕯 PCRV4 — Estrategia 4 Velas</div>
+    <div class="candles" id="candles"></div>
+    <div style="margin-top:8px;font-size:11px;color:var(--muted)" id="pcrv4Info">Sin datos aún…</div>
+  </div>
+
+  <!-- Risk Gates -->
+  <div class="gates-card">
+    <div class="card-title">Risk Gate — 5 Puertas de Seguridad</div>
+    <div class="verdict v-wait" id="verdictBanner">⏳ Esperando análisis…</div>
+    <div id="gatesList"></div>
+  </div>
+
+  <!-- Tendencia y S/R -->
+  <div class="info-cards">
+    <div class="info-card">
+      <div class="card-title">Tendencia</div>
+      <div style="font-size:18px;font-weight:800;margin:4px 0" id="trendVal">—</div>
+      <div style="font-size:11px;color:var(--muted)" id="adxVal">ADX —</div>
+    </div>
+    <div class="info-card">
+      <div class="card-title">Zonas S/R</div>
+      <div style="font-size:10px;color:var(--r)">Resistencia</div>
+      <div class="sr-row" id="srRes"></div>
+      <div style="font-size:10px;color:var(--g);margin-top:5px">Soporte</div>
+      <div class="sr-row" id="srSup"></div>
+    </div>
+  </div>
+
+  <!-- Historial -->
+  <div class="hist-card">
+    <div class="card-title">Últimas Operaciones</div>
+    <div id="histList"><div style="color:var(--muted);font-size:12px;padding:10px 0">Sin operaciones aún…</div></div>
+  </div>
+</div>
+
+<footer>PCRV4 Bot · IQ Option · Aprobación manual · ws://localhost:8765</footer>
+
+<!-- ══ WEBSOCKET ENGINE ══════════════════════════════════════════════════ -->
+<script>
+let ws = null;
+let state = {};
+let approvalTimer = null;
+let timerSec = 0;
+
+function reconnect() {
+  document.getElementById('overlaySpinner').style.display='block';
+  document.getElementById('overlayIcon').style.display='none';
+  document.getElementById('overlayMsg').textContent='Conectando con el bot…';
+  document.getElementById('retryBtn').style.display='none';
+  connect();
+}
+
+function connect() {
+  try { if(ws) ws.close(); } catch(e){}
+  ws = new WebSocket('ws://localhost:8765');
+
+  ws.onopen = () => {
+    document.getElementById('overlay').classList.add('hidden');
+    document.getElementById('connDot').className='conn-dot on';
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      state = JSON.parse(ev.data);
+      render(state);
+    } catch(e){ console.warn(e); }
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    document.getElementById('overlay').classList.remove('hidden');
+    document.getElementById('overlaySpinner').style.display='none';
+    document.getElementById('overlayIcon').style.display='block';
+    document.getElementById('overlayMsg').textContent='Bot desconectado';
+    document.getElementById('overlaySub').textContent='Asegúrate de que el bot esté corriendo: python main.py';
+    document.getElementById('retryBtn').style.display='block';
+    document.getElementById('connDot').className='conn-dot off';
+    closeApproval();
+    setTimeout(connect, 3000);
+  };
+}
+
+function sendDecision(action) {
+  if(ws && ws.readyState===1) ws.send(JSON.stringify({action}));
+  closeApproval();
+}
+
+function closeApproval() {
+  document.getElementById('approvalBanner').classList.remove('show');
+  if(approvalTimer){ clearInterval(approvalTimer); approvalTimer=null; }
+}
+
+// ── RENDER ──────────────────────────────────────────────────────────────────
+function render(s) {
+  // Topbar
+  const dot=document.getElementById('connDot');
+  dot.className='conn-dot '+(s.connected?'on':s.bot_status==='INICIANDO'?'wait':'off');
+  document.getElementById('accountBadge').textContent=s.account_type||'DEMO';
+  document.getElementById('accountBadge').className='badge '+(s.account_type==='REAL'?'badge-real':'badge-demo');
+  document.getElementById('topPrice').textContent=s.price?s.price.toFixed(5):'—';
+  document.getElementById('topBalance').textContent=s.balance?'$'+s.balance.toFixed(2):'—';
+  document.getElementById('topStatus').textContent=s.bot_status||'—';
+
+  // KPIs
+  const d=s.daily||{};
+  const pnl=d.pnl||0, wr=d.win_rate||0, wins=d.wins||0, ops=d.trades||0;
+  document.getElementById('kBal').textContent='$'+(s.balance||0).toFixed(2);
+  document.getElementById('kBal').className='kpi-val '+(s.balance>=(s.balance_start||0)?'g':'r');
+  document.getElementById('kBalSub').textContent=(s.account_type==='REAL'?'cuenta real':'cuenta demo');
+  document.getElementById('kPnl').textContent=(pnl>=0?'+$':'-$')+Math.abs(pnl).toFixed(2);
+  document.getElementById('kPnl').className='kpi-val '+(pnl>=0?'g':'r');
+  document.getElementById('kPnlSub').textContent=ops+' operaciones hoy';
+  document.getElementById('kWr').textContent=ops?(wr*100).toFixed(0)+'%':'—';
+  document.getElementById('kWr').className='kpi-val '+(wr>=0.8?'g':wr>=0.65?'y':'r');
+  document.getElementById('kWrSub').textContent=wins+'W / '+(ops-wins)+'L';
+  document.getElementById('kScore').textContent=s.score!=null?s.score.toFixed(2):'—';
+  document.getElementById('kConf').textContent=s.confidence?'conf '+(s.confidence*100).toFixed(0)+'%':'—';
+
+  // Signal
+  const sig=s.signal;
+  const side=document.getElementById('sigSide');
+  side.className='signal-side '+(sig||'none');
+  document.getElementById('sigDir').textContent=sig?sig.toUpperCase():'—';
+  document.getElementById('sigDir').style.color=sig==='call'?'var(--g)':sig==='put'?'var(--r)':'var(--muted)';
+  document.getElementById('sigConf').textContent=s.confidence?(s.confidence*100).toFixed(0)+'% conf':'esperando…';
+  document.getElementById('sigScore').textContent='Score: '+(s.score!=null?s.score.toFixed(2):'—');
+
+  // Layer chips
+  const lc=document.getElementById('layerChips');
+  lc.innerHTML='';
+  const L=s.layers||{};
+  [['TECH',L.tech,'W=1.0'],['PA',L.pa,'W=1.2'],['ML',L.ml,'W=0.8'],['PCRV4',L.pcrv4||s.pcrv4,'W=1.3']].forEach(([n,l,w])=>{
+    const ls=l?.signal||null;
+    const chip=document.createElement('div');
+    chip.className='chip '+(ls==='call'?'chip-call':ls==='put'?'chip-put':n==='PCRV4'&&s.pcrv4?.active?'chip-pcrv4':'chip-none');
+    chip.textContent=n+' '+(ls?ls.toUpperCase():'—')+' '+w;
+    lc.appendChild(chip);
+  });
+
+  document.getElementById('sigReasons').textContent=(s.reasons||[]).join(' · ')||'Analizando…';
+
+  // PCRV4
+  const pcrv4=s.pcrv4||{};
+  renderCandles(pcrv4, sig);
+  document.getElementById('pcrv4Info').innerHTML=
+    pcrv4.active
+    ? `<span style="color:var(--pcrv4);font-weight:700">🎯 ACTIVO</span> — ${pcrv4.reason||''} <span style="color:var(--muted)">(conf ${((pcrv4.confidence||0)*100).toFixed(0)}%)</span>`
+    : `<span style="color:var(--muted)">⬜ Sin patrón PCRV4 — ${pcrv4.reason||'esperando señal'}</span>`;
+
+  // Gates
+  renderGates(s);
+
+  // Trend
+  const tr=s.trend||{};
+  const tdir=tr.short==='up'?'↑ ALCISTA':tr.short==='down'?'↓ BAJISTA':'→ LATERAL';
+  document.getElementById('trendVal').textContent=tdir;
+  document.getElementById('trendVal').style.color=tr.short==='up'?'var(--g)':tr.short==='down'?'var(--r)':'var(--y)';
+  document.getElementById('adxVal').textContent='ADX '+(tr.adx||0).toFixed(1)+' | Corto: '+(tr.short||'?')+' | Largo: '+(tr.long||'?');
+
+  // S/R (from sr context in analysis — may not always be in state)
+  const sr=s.sr||{};
+  document.getElementById('srRes').innerHTML=(sr.resistance||[]).map(r=>`<span class="sr-pill sr-r">${r.toFixed?r.toFixed(3):r}</span>`).join('')||'<span style="color:var(--muted);font-size:11px">calculando…</span>';
+  document.getElementById('srSup').innerHTML=(sr.support||[]).map(r=>`<span class="sr-pill sr-s">${r.toFixed?r.toFixed(3):r}</span>`).join('')||'<span style="color:var(--muted);font-size:11px">calculando…</span>';
+
+  // History
+  renderHistory(s.history||[]);
+
+  // Approval
+  if(s.pending_approval && !document.getElementById('approvalBanner').classList.contains('show')) {
+    showApproval(s);
+  } else if(!s.pending_approval) {
+    closeApproval();
+  }
+}
+
+function renderCandles(pcrv4, sig) {
+  const row=document.getElementById('candles');
+  row.innerHTML='';
+  const types=pcrv4.candles||( sig==='call'?['bull','bear','bull','break','conf']:
+                                sig==='put' ?['bear','bull','bear','break','conf']:
+                                ['grey','grey','grey','grey','grey']);
+  ['c1','c2','c3','c4','c5'].forEach((lbl,i)=>{
+    const t=types[i]||'grey';
+    const wrap=document.createElement('div'); wrap.className='cdl';
+    const body=document.createElement('div');
+    body.className='body '+(t==='break'?'c-break':t==='conf'?'c-conf':t==='bull'?'c-bull':t==='bear'?'c-bear':t==='doji'?'c-doji':'c-grey');
+    const l=document.createElement('div'); l.className='lbl'; l.textContent=lbl;
+    wrap.appendChild(body); wrap.appendChild(l);
+    row.appendChild(wrap);
+  });
+}
+
+function renderGates(s) {
+  const banner=document.getElementById('verdictBanner');
+  const v=s.verdict;
+  if(s.pending_approval){
+    banner.className='verdict v-wait'; banner.textContent='⏳ ESPERANDO TU DECISIÓN…';
+  } else if(v==='PASS'){
+    banner.className='verdict v-pass'; banner.textContent='🟢 TODAS LAS PUERTAS ABIERTAS — PUEDE OPERAR';
+  } else if(v==='BLOCK'){
+    banner.className='verdict v-block';
+    banner.textContent='🔴 BLOQUEADO'+(s.block_reason?' — '+s.block_reason:'');
+  } else {
+    banner.className='verdict v-wait'; banner.textContent='⏳ Analizando…';
+  }
+  const list=document.getElementById('gatesList');
+  list.innerHTML='';
+  (s.gates||[]).forEach(g=>{
+    const row=document.createElement('div'); row.className='gate';
+    row.innerHTML=`<span class="gate-ico">${g.result==='PASS'?'✅':'❌'}</span>
+      <span class="gate-name ${g.result==='PASS'?'gp':'gb'}">${g.gate}</span>
+      <span class="gate-reason">${g.reason||''}</span>`;
+    list.appendChild(row);
+  });
+}
+
+function renderHistory(hist) {
+  const list=document.getElementById('histList');
+  if(!hist.length){ list.innerHTML='<div style="color:var(--muted);font-size:12px;padding:10px 0">Sin operaciones aún…</div>'; return; }
+  list.innerHTML='';
+  [...hist].reverse().slice(0,15).forEach(h=>{
+    const row=document.createElement('div'); row.className='hist-row';
+    const pnl=h.profit||0;
+    row.innerHTML=`<span class="hist-time">${h.time||'—'}</span>
+      <span class="hist-sig ${h.signal==='call'?'g':'r'}">${(h.signal||'').toUpperCase()}</span>
+      <span style="color:var(--muted)">${h.outcome==='win'?'✅ WIN':'❌ LOSE'}</span>
+      ${h.pcrv4?'<span style="color:var(--pcrv4);font-size:10px">🎯</span>':''}
+      <span class="hist-pnl ${pnl>=0?'g':'r'}">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</span>`;
+    list.appendChild(row);
+  });
+}
+
+// ── Approval UI ──────────────────────────────────────────────────────────────
+function showApproval(s) {
+  const banner=document.getElementById('approvalBanner');
+  banner.classList.add('show');
+  const sig=s.signal||'—';
+  document.getElementById('apHead').textContent=`🔔 SEÑAL ${sig.toUpperCase()} — ¿INVIERTES?`;
+  document.getElementById('apInfo').innerHTML=`
+    <div class="info-row"><span class="info-label">Activo</span><span class="info-val">${s.asset||'XAUUSD'}</span></div>
+    <div class="info-row"><span class="info-label">Precio</span><span class="info-val">${s.price?s.price.toFixed(5):'—'}</span></div>
+    <div class="info-row"><span class="info-label">Confianza</span><span class="info-val ${(s.confidence||0)>=0.7?'g':'y'}">${((s.confidence||0)*100).toFixed(0)}%</span></div>
+    <div class="info-row"><span class="info-label">Score</span><span class="info-val">${(s.score||0).toFixed(2)}</span></div>
+    <div class="info-row"><span class="info-label">PCRV4</span><span class="info-val ${s.pcrv4?.active?'pu':''}">${s.pcrv4?.active?'🎯 Activo':'Sin patrón'}</span></div>
+    <div class="info-row"><span class="info-label">Cuenta</span><span class="info-val ${s.account_type==='REAL'?'r':'y'}">${s.account_type||'DEMO'}</span></div>
+  `;
+  document.getElementById('apReason').textContent=(s.reasons||[]).slice(0,3).join(' · ');
+
+  timerSec=50;
+  document.getElementById('apTimer').textContent=timerSec;
+  document.getElementById('apTimer').className='approval-timer';
+  if(approvalTimer) clearInterval(approvalTimer);
+  approvalTimer=setInterval(()=>{
+    timerSec--;
+    document.getElementById('apTimer').textContent=timerSec;
+    if(timerSec<=10) document.getElementById('apTimer').className='approval-timer urgent';
+    if(timerSec<=0){ clearInterval(approvalTimer); closeApproval(); }
+  },1000);
+}
+
+// ── START ────────────────────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>
