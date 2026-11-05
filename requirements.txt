@@ -6,4 +6,5 @@ xgboost>=2.0.0
 joblib>=1.3.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-websocket-client>=1.7.0
+# CRÍTICO: websocket-client>=1.0 rompe la API de IQ Option — mantener en 0.57
+websocket-client==0.57.0
